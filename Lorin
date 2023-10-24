@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+
+import weewx
+from weewx.engine import StdService
+import weeutil.weeutil
+import syslog
+from weewx.units import convert, getStandardUnitType
+
+# Check for Pillow library installation
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    syslog.syslog(syslog.LOG_ERR, "AddTxt2Jpg: Pillow library not found. Please install with 'pip install Pillow'.")
+    exit(1)
+
+class AddTxt2Jpg(StdService):
+    def __init__(self, engine, config_dict):
+        super(AddTxt2Jpg, self).__init__(engine, config_dict)
+        
+        # Logging tag
+        self.log_tag = "AddTxt2Jpg"
+        
+        # Get configuration options from weewx.conf
+        self.image_path = config_dict.get('AddTxt2Jpg', {}).get('image_path', '')
+        self.output_path = config_dict.get('AddTxt2Jpg', {}).get('output_path', '')
+        self.font_path = config_dict.get('AddTxt2Jpg', {}).get('font_path', '')
+        self.text_format = config_dict.get('AddTxt2Jpg', {}).get('text_format', 'Weather Data: {outTemp}°C, Humidity: {outHumidity}%')
+        self.text_x = int(config_dict.get('AddTxt2Jpg', {}).get('text_x', '20'))
+        self.text_y = int(config_dict.get('AddTxt2Jpg', {}).get('text_y', '20'))
+        self.text_color = config_dict.get('AddTxt2Jpg', {}).get('text_color', 'white')
+        self.text_font_size = int(config_dict.get('AddTxt2Jpg', {}).get('text_font_size', '20'))
+        
+        # Set up the converter
+        target_unit_nickname = config_dict.get("StdConvert", {}).get("target_unit", "METRIC")
+        target_unit = weewx.units.unit_constants[target_unit_nickname.upper()]
+        self.converter = weewx.units.StdUnitConverters[target_unit]
+
+        # Get the list of fields to be extracted from the archive record
+        fields = config_dict.get('AddTxt2Jpg', {}).get('fields', [])
+        if isinstance(fields, str):
+            self.fields = [x.strip() for x in fields.split(',')]
+        elif isinstance(fields, list):
+            self.fields = fields
+        else:
+            self.fields = []
+
+        # Bind to the new archive record event
+        self.bind(weewx.NEW_ARCHIVE_RECORD, self.new_archive_record)
+        
+        syslog.syslog(syslog.LOG_INFO, f"{self.log_tag}: initialized.")
+
+    def new_archive_record(self, event):
+        syslog.syslog(syslog.LOG_INFO, f"{self.log_tag}: New archive record event triggered.")
+        
+        try:
+            # Access the record containing the archived weather data
+            record = event.record
+
+            # Convert all fields to the desired unit system using the converter
+            for field in self.fields:
+                if field in record:
+                    value = record[field]
+                    std_unit_type, group = getStandardUnitType(record['usUnits'], field)
+                    value_converted = self.converter.convert((value, std_unit_type, group))
+                    record[field] = value_converted[0]
+
+            # Extract fields from configuration
+            field_values = {field: record.get(field) for field in self.fields}
+
+            # Open the existing image
+            image = Image.open(self.image_path)
+
+            # Create a drawing context
+            draw = ImageDraw.Draw(image)
+
+            # Load the specified font
+            font = ImageFont.truetype(self.font_path, size=self.text_font_size)
+
+            # Format the text using weather data from the record
+            formatted_text = self.text_format.format(**field_values)
+
+            # Add the formatted text to the image
+            draw.text((self.text_x, self.text_y), formatted_text, fill=self.text_color, font=font)
+
+            # Save the modified image to the output path
+            image.save(self.output_path)
+
+            # Log a message to the system log
+            syslog.syslog(syslog.LOG_INFO, f"{self.log_tag}: Text added to image and saved as {self.output_path}")
+
+        except Exception as e:
+            # Handle any exceptions and log them
+            syslog.syslog(syslog.LOG_ERR, f"{self.log_tag}: Error: {str(e)}")
+
